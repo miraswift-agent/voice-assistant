@@ -26,7 +26,7 @@ from openwakeword.model import Model
 # Voice server on mirapc
 VOICE_SERVER = "http://mirapc:8765/voice/ask"
 
-PIPER_MODEL = "/home/tom/voices/en_US-lessac-medium.onnx"
+PIPER_MODEL = "/home/tom/voice-assistant/models/en_US-lessac-medium.onnx"
 
 INPUT_RATE = 16000
 TARGET_RATE = 16000

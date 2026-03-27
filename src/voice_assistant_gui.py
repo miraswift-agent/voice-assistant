@@ -13,6 +13,7 @@ import tempfile
 import wave
 import threading
 import requests
+import time
 import numpy as np
 import sounddevice as sd
 import webrtcvad
@@ -25,7 +26,7 @@ from settings_dialog import SettingsDialog
 
 # Configuration
 VOICE_SERVER = "http://mirapc:8765/voice/ask"
-PIPER_MODEL = "/home/tom/voices/en_US-lessac-medium.onnx"
+PIPER_MODEL = "/home/tom/voice-assistant/models/en_US-lessac-medium.onnx"
 
 INPUT_RATE = 16000
 BLOCK_MS = 30
@@ -305,9 +306,11 @@ class VoiceAssistantGUI:
                         chunk = eval(data)
                         text = chunk.get("text", "")
                         if text:
+                            print(f"Got chunk: {text}")
                             self.set_status(f"Mira: {text}")
                             self._speak(text)
-                    except:
+                    except Exception as e:
+                        print(f"Error parsing chunk: {e}, data: {data}")
                         pass
         
         except Exception as e:
@@ -317,13 +320,12 @@ class VoiceAssistantGUI:
         
         finally:
             # Clear audio queue to prevent feedback loop
-            import time
-            time.sleep(0.5)  # Wait for TTS to finish
             while not self.audio_q.empty():
                 try:
                     self.audio_q.get_nowait()
                 except:
                     break
+            time.sleep(1.0)  # Wait before returning to listening
     
     def _speak(self, text):
         """Speak text with Piper TTS"""
