@@ -17,9 +17,11 @@ import numpy as np
 import sounddevice as sd
 import webrtcvad
 from pathlib import Path
+import json
 from faster_whisper import WhisperModel
 from openwakeword.model import Model
 from orb_visualizer import OrbVisualizer
+from settings_dialog import SettingsDialog
 
 # Configuration
 VOICE_SERVER = "http://mirapc:8765/voice/ask"
@@ -31,6 +33,19 @@ BLOCK_SIZE = int(INPUT_RATE * BLOCK_MS / 1000)
 WAKE_THRESHOLD = 0.5
 MAX_RECORD_SECONDS = 12
 SILENCE_SECONDS = 1.5
+
+def load_device_config():
+    """Load saved audio device configuration"""
+    config_path = Path.home() / 'voice-assistant' / 'config' / 'settings.json'
+    try:
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                return config.get('input_device'), config.get('output_device')
+    except:
+        pass
+    return None, None
+
 
 class VoiceAssistantGUI:
     """Main GUI application with integrated voice loop"""
@@ -51,6 +66,11 @@ class VoiceAssistantGUI:
         self.stream = None
         self.voice_thread = None
         
+        # Audio device configuration
+        self.input_device = None
+        self.output_device = None
+        self._load_device_config()
+        
         self._create_widgets()
         
         # Start orb animation
@@ -64,6 +84,11 @@ class VoiceAssistantGUI:
         
         tk.Label(top_bar, text="🎤 Voice Assistant", font=('Arial', 18, 'bold'),
                 bg='#000000', fg='#00BFFF').pack(side=tk.LEFT)
+        
+        # Settings button
+        tk.Button(top_bar, text="⚙️", command=self._open_settings,
+                 bg='#1a1a1a', fg='white', font=('Arial', 16),
+                 padx=10, pady=5, relief=tk.FLAT).pack(side=tk.RIGHT)
         
         # Orb visualization
         self.orb = OrbVisualizer(self.root, size=450)
@@ -81,6 +106,15 @@ class VoiceAssistantGUI:
                                       font=('Arial', 14, 'bold'),
                                       padx=40, pady=15)
         self.start_button.pack(pady=20)
+        
+    def _load_device_config(self):
+        """Load device configuration from file"""
+        self.input_device, self.output_device = load_device_config()
+    
+    def _open_settings(self):
+        """Open settings dialog"""
+        dialog = SettingsDialog(self.root)
+        self.root.wait_window(dialog)
         
     def _toggle_listening(self):
         """Start/stop voice assistant"""
@@ -136,6 +170,7 @@ class VoiceAssistantGUI:
         """Main voice detection loop"""
         # Open audio stream
         self.stream = sd.InputStream(
+            device=self.input_device,  # Use configured device
             samplerate=INPUT_RATE,
             channels=1,
             dtype="float32",
