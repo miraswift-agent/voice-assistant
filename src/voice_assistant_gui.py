@@ -314,6 +314,16 @@ class VoiceAssistantGUI:
             print(f"Error asking Mira: {e}")
             self.set_status(f"Error: {e}")
             self._speak("Sorry, I couldn't reach the voice server.")
+        
+        finally:
+            # Clear audio queue to prevent feedback loop
+            import time
+            time.sleep(0.5)  # Wait for TTS to finish
+            while not self.audio_q.empty():
+                try:
+                    self.audio_q.get_nowait()
+                except:
+                    break
     
     def _speak(self, text):
         """Speak text with Piper TTS"""
