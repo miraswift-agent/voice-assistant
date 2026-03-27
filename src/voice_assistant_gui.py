@@ -91,8 +91,8 @@ class VoiceAssistantGUI:
                  padx=10, pady=5, relief=tk.FLAT).pack(side=tk.RIGHT)
         
         # Orb visualization
-        self.orb = OrbVisualizer(self.root, size=450)
-        self.orb.pack(pady=20)
+        self.orb = OrbVisualizer(self.root, size=350)
+        self.orb.pack(pady=5)
         
         # Status text
         self.status_label = tk.Label(self.root, text="Ready to start", 
@@ -105,7 +105,7 @@ class VoiceAssistantGUI:
                                       bg='#28a745', fg='white',
                                       font=('Arial', 14, 'bold'),
                                       padx=40, pady=15)
-        self.start_button.pack(pady=20)
+        self.start_button.pack(pady=10)
         
     def _load_device_config(self):
         """Load device configuration from file"""
