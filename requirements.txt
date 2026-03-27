@@ -1,0 +1,30 @@
+# Voice Assistant Dependencies
+
+# Wake word detection
+openwakeword>=0.5.0
+
+# Voice activity detection
+webrtcvad>=2.0.10
+
+# Speech-to-text
+faster-whisper>=0.10.0
+
+# Text-to-speech
+piper-tts>=1.2.0
+
+# Audio processing
+pyaudio>=0.2.13
+numpy<2.0  # NumPy 2.x breaks webrtcvad compatibility
+sounddevice>=0.4.6
+
+# HTTP webhook server
+flask>=3.0.0
+
+# Telegram integration
+python-telegram-bot>=20.0
+
+# GUI (optional, already on Pi)
+# tkinter comes with Python on Raspberry Pi OS
+
+# Utilities
+requests>=2.31.0

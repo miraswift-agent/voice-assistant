@@ -1,0 +1,17 @@
+{
+  "wake_words": ["alexa", "hey jarvis", "hey mycroft", "hey rhasspy"],
+  "audio_input_device": "default",
+  "audio_output_device": "default",
+  "whisper_model": "tiny.en",
+  "whisper_device": "cpu",
+  "whisper_compute_type": "int8",
+  "piper_model": "models/en_US-lessac-medium.onnx",
+  "webhook_port": 8765,
+  "webhook_host": "0.0.0.0",
+  "telegram_token": "YOUR_BOT_TOKEN_HERE",
+  "openclaw_chat_id": "YOUR_CHAT_ID_HERE",
+  "volume_input": 1.0,
+  "volume_output": 1.0,
+  "vad_aggressiveness": 3,
+  "silence_duration_ms": 1500
+}
