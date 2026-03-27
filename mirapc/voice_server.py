@@ -22,11 +22,6 @@ app = Flask(__name__)
 # Server configuration
 VOICE_PORT = 8765
 
-# Voice configuration (NOT USED - Pi handles TTS)
-# These are for reference/documentation
-PIPER_MODEL = "/home/tom/voices/en_US-ljspeech-high.onnx"
-PIPER_BIN = "/home/tom/voice-assistant/bin/piper"
-
 # LLM configuration
 OLLAMA_ENDPOINT = "http://citadel:11434/v1/chat/completions"
 DEFAULT_MODEL = "qwen2.5:14b-instruct"
@@ -37,21 +32,24 @@ def generate_voice_response(question):
     Yields sentences as they're generated
     """
     
-    # Prompt for voice-optimized responses
-    system_prompt = """You are Mira, Tom's AI assistant. You're speaking to him via voice.
+    # STRICT prompt for ultra-short voice responses
+    system_prompt = """You are Mira, Tom's AI assistant speaking via voice.
 
-Keep responses:
-- Ultra concise (1-3 sentences max)
-- Natural spoken language
-- No markdown, no formatting
-- Direct answers, no preamble
+CRITICAL RULES:
+- ONE sentence only, never more
+- Direct answer, no preamble or questions
+- No "let me", "I can", "would you like" - just state the answer
+- Max 15 words
 
-Example:
+Examples:
 Q: What's the weather?
-A: It's currently 70 degrees and sunny. Perfect day outside.
+A: It's 72 degrees and sunny.
 
 Q: What time is it?
-A: It's 2:15 PM."""
+A: It's 4:47 PM.
+
+Q: How are you?
+A: I'm doing well, thanks."""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -66,8 +64,8 @@ A: It's 2:15 PM."""
             "model": DEFAULT_MODEL,
             "messages": messages,
             "stream": True,
-            "temperature": 0.7,
-            "max_tokens": 200  # Keep responses short
+            "temperature": 0.5,
+            "max_tokens": 50  # Force brevity
         })
     ]
     
@@ -80,6 +78,7 @@ A: It's 2:15 PM."""
     )
     
     buffer = ""
+    sentence_count = 0
     
     for line in process.stdout:
         if not line.strip() or line.strip() == "data: [DONE]":
@@ -96,8 +95,8 @@ A: It's 2:15 PM."""
             if content:
                 buffer += content
                 
-                # Yield complete sentences
-                while any(punct in buffer for punct in ['. ', '! ', '? ', '\n']):
+                # Yield complete sentences (but only first one)
+                while any(punct in buffer for punct in ['. ', '! ', '? ', '\n']) and sentence_count == 0:
                     for punct in ['. ', '! ', '? ', '\n']:
                         if punct in buffer:
                             idx = buffer.index(punct)
@@ -105,14 +104,16 @@ A: It's 2:15 PM."""
                             buffer = buffer[idx+1:].strip()
                             
                             if sentence:
+                                sentence_count += 1
                                 yield sentence
+                                return  # Stop after first sentence
                             break
         
         except json.JSONDecodeError:
             continue
     
-    # Yield remaining buffer
-    if buffer.strip():
+    # Yield remaining buffer (but only if no sentence sent yet)
+    if buffer.strip() and sentence_count == 0:
         yield buffer.strip()
 
 
@@ -128,7 +129,6 @@ def voice_ask():
     Response:
         Stream of newline-delimited JSON:
         {"text": "It's currently 70 degrees and sunny."}
-        {"text": "Perfect day outside."}
     """
     try:
         data = request.get_json()

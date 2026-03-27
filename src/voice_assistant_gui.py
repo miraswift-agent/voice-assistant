@@ -70,6 +70,7 @@ class VoiceAssistantGUI:
         # Audio device configuration
         self.input_device = None
         self.output_device = None
+        self.last_spoke_time = 0  # Cooldown to prevent feedback
         self._load_device_config()
         
         self._create_widgets()
@@ -188,6 +189,10 @@ class VoiceAssistantGUI:
                 # Update orb with audio levels (for visualization)
                 level = float(np.abs(chunk).mean())
                 self.orb.update_audio_levels([level])
+                
+                # Check cooldown period (no wake word detection for 3s after speaking)
+                if time.time() - self.last_spoke_time < 3.0:
+                    continue
                 
                 # Check for wake word
                 predictions = self.wake_model.predict(pcm)
@@ -319,13 +324,15 @@ class VoiceAssistantGUI:
             self._speak("Sorry, I couldn't reach the voice server.")
         
         finally:
+            # Set cooldown timer to prevent detecting own voice
+            self.last_spoke_time = time.time()
+            
             # Clear audio queue to prevent feedback loop
             while not self.audio_q.empty():
                 try:
                     self.audio_q.get_nowait()
                 except:
                     break
-            time.sleep(1.0)  # Wait before returning to listening
     
     def _speak(self, text):
         """Speak text with Piper TTS"""
