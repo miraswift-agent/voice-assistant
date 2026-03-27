@@ -1,268 +1,206 @@
 """
-Voice Assistant - CLI Version
-Wake word detection → transcription → Telegram → TTS response
+Voice Assistant - Working CLI Version from Pi
+Wake word detection → transcription → HTTP voice server → TTS response
 
-Based on March 20, 2026 architecture:
-- Wake word detection (openwakeword)
-- Voice activity detection (webrtcvad)  
-- Transcription (faster-whisper)
-- Telegram integration for bidirectional communication
-- Webhook server for streaming responses
-- TTS playback (Piper)
+Architecture:
+- Wake word: openwakeword (Alexa, Hey Jarvis, Hey Mycroft, Hey Rhasspy)
+- VAD: webrtcvad for silence detection
+- Transcription: faster-whisper (tiny model, int8)
+- Communication: HTTP POST to mirapc:8765/voice/ask (streaming response)
+- TTS: Piper with paplay
 """
 
-import os
-import sys
-import time
-import json
-import wave
-import struct
-import pyaudio
-import webrtcvad
-import numpy as np
-from pathlib import Path
-from faster_whisper import WhisperModel
-from openwakeword.model import Model as WakeWordModel
-import requests
-from flask import Flask, request, jsonify
-import threading
+import queue
 import subprocess
+import tempfile
+import wave
+import os
+import time
+import requests
+import numpy as np
+import sounddevice as sd
+import webrtcvad
+from faster_whisper import WhisperModel
+from openwakeword.model import Model
 
-# Load configuration
-CONFIG_PATH = Path(__file__).parent.parent / "config" / "settings.json"
-with open(CONFIG_PATH, 'r') as f:
-    config = json.load(f)
+# Voice server on mirapc
+VOICE_SERVER = "http://mirapc:8765/voice/ask"
 
-# Audio parameters
-SAMPLE_RATE = 16000
-CHUNK_SIZE = 512
-CHANNELS = 1
-VAD_FRAME_MS = 30  # webrtcvad requires 10, 20, or 30ms frames
-VAD_FRAME_SIZE = int(SAMPLE_RATE * VAD_FRAME_MS / 1000)
+PIPER_MODEL = "/home/tom/voices/en_US-lessac-medium.onnx"
 
-# Initialize components
-print("Loading wake word model...")
-wake_word_model = WakeWordModel(
-    wakeword_models=config['wake_words'],
-    inference_framework='onnx'
-)
+INPUT_RATE = 16000
+TARGET_RATE = 16000
+BLOCK_MS = 30
+BLOCK_SIZE = int(INPUT_RATE * BLOCK_MS / 1000)
 
-print("Loading Whisper model...")
-whisper_model = WhisperModel(
-    config['whisper_model'],
-    device=config['whisper_device'],
-    compute_type=config['whisper_compute_type']
-)
+WAKE_THRESHOLD = 0.5
+MAX_RECORD_SECONDS = 12
+SILENCE_SECONDS = 1.5
 
-print("Initializing VAD...")
-vad = webrtcvad.Vad(config['vad_aggressiveness'])
+audio_q = queue.Queue()
+vad = webrtcvad.Vad(2)
+wake_model = Model()
+whisper = WhisperModel("tiny", compute_type="int8")
 
-# Audio interface
-audio = pyaudio.PyAudio()
 
-# Webhook server for receiving responses
-app = Flask(__name__)
-response_queue = []
+def audio_callback(indata, frames, time, status):
+    """Audio stream callback"""
+    if status:
+        print(f"Audio: {status}")
+    audio_q.put(indata[:, 0].copy())
 
-@app.route('/response', methods=['POST'])
-def receive_response():
-    """Receive streaming response chunks from Mira"""
-    data = request.get_json()
-    sentence = data.get('sentence', '')
-    is_final = data.get('final', False)
-    
-    if sentence:
-        print(f"[Response] {sentence}")
-        response_queue.append(sentence)
-        speak(sentence)
-    
-    return jsonify({"status": "ok"})
 
-def start_webhook_server():
-    """Start webhook server in background thread"""
-    app.run(
-        host=config['webhook_host'],
-        port=config['webhook_port'],
-        debug=False,
-        use_reloader=False
-    )
+def pcm16(samples):
+    """Convert float32 audio to int16 PCM"""
+    return (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+
+
+def save_wav(path, audio, rate):
+    """Save audio array to WAV file"""
+    pcm = pcm16(audio)
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(pcm.tobytes())
+
+
+def transcribe(path):
+    """Transcribe audio file with Whisper"""
+    segments, _ = whisper.transcribe(path)
+    return " ".join([s.text for s in segments]).strip()
+
 
 def speak(text):
-    """Convert text to speech using Piper"""
+    """Convert text to speech with Piper and play"""
+    txt_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+    wav_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    
+    txt_path = txt_file.name
+    wav_path = wav_file.name
+    
+    txt_file.write(text)
+    txt_file.close()
+    wav_file.close()
+    
     try:
-        # Use Piper TTS
-        cmd = [
-            'piper',
-            '--model', config['piper_model'],
-            '--output-raw'
-        ]
-        
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        audio_data, _ = process.communicate(input=text.encode('utf-8'))
-        
-        # Play audio
-        stream = audio.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=22050,  # Piper default
-            output=True
-        )
-        stream.write(audio_data)
-        stream.stop_stream()
-        stream.close()
-        
-    except Exception as e:
-        print(f"[TTS Error] {e}")
+        with open(txt_path, "r") as stdin_f:
+            subprocess.run(
+                ["piper", "--model", PIPER_MODEL, "--output_file", wav_path],
+                stdin=stdin_f,
+                check=True,
+                capture_output=True
+            )
+        subprocess.run(["paplay", wav_path], check=True, capture_output=True)
+    finally:
+        os.unlink(txt_path)
+        os.unlink(wav_path)
 
-def record_audio(duration_ms=5000):
-    """Record audio with VAD-based silence detection"""
+
+def record_until_silence():
+    """Record audio until silence detected"""
     frames = []
-    stream = audio.open(
-        format=pyaudio.paInt16,
-        channels=CHANNELS,
-        rate=SAMPLE_RATE,
-        input=True,
-        frames_per_buffer=VAD_FRAME_SIZE
-    )
+    silence_blocks = int((1000 * SILENCE_SECONDS) / BLOCK_MS)
+    silent = 0
+    max_blocks = int((1000 * MAX_RECORD_SECONDS) / BLOCK_MS)
     
-    print("[Recording] Speak now...")
-    silence_frames = 0
-    max_silence_frames = int(config['silence_duration_ms'] / VAD_FRAME_MS)
-    
-    while True:
-        frame = stream.read(VAD_FRAME_SIZE, exception_on_overflow=False)
-        frames.append(frame)
+    for _ in range(max_blocks):
+        chunk = audio_q.get()
+        frames.append(chunk)
         
-        # Check for speech
-        is_speech = vad.is_speech(frame, SAMPLE_RATE)
+        is_speech = vad.is_speech(pcm16(chunk).tobytes(), INPUT_RATE)
         
-        if not is_speech:
-            silence_frames += 1
-            if silence_frames > max_silence_frames:
-                print("[Recording] Silence detected, stopping...")
+        if is_speech:
+            silent = 0
+        else:
+            silent += 1
+            if silent >= silence_blocks and len(frames) > 5:
                 break
-        else:
-            silence_frames = 0
     
-    stream.stop_stream()
-    stream.close()
-    
-    return b''.join(frames)
+    return np.concatenate(frames)
 
-def transcribe_audio(audio_data):
-    """Transcribe audio using Whisper"""
-    # Save to temp WAV file
-    temp_path = "/tmp/voice_input.wav"
-    with wave.open(temp_path, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(audio_data)
-    
-    # Transcribe
-    segments, info = whisper_model.transcribe(temp_path, language="en")
-    text = " ".join([segment.text for segment in segments])
-    
-    os.remove(temp_path)
-    return text.strip()
 
-def send_to_mira(text):
-    """Send transcribed text to Mira via Telegram with callback URL"""
-    # Get callback URL (webhook endpoint)
-    callback_url = f"http://raspberrypi:{config['webhook_port']}/response"
-    
-    # Format message with voice indicator and callback
-    message = f"🎤 Voice [{callback_url}]: {text}"
-    
-    # Send via Telegram Bot API
-    url = f"https://api.telegram.org/bot{config['telegram_token']}/sendMessage"
-    payload = {
-        "chat_id": config['openclaw_chat_id'],
-        "text": message
-    }
-    
+def ask_mira(question):
+    """Send question to Mira's voice server, receive streaming response"""
     try:
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            print(f"[Sent] {text}")
-        else:
-            print(f"[Error] Failed to send message: {response.text}")
+        print("   Asking Mira...")
+        
+        response = requests.post(
+            VOICE_SERVER,
+            json={"question": question},
+            stream=True,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        print("   Receiving response...\n")
+        
+        for line in response.iter_lines():
+            if line:
+                data = line.decode('utf-8')
+                try:
+                    chunk = eval(data)  # Parse JSON-like string
+                    text = chunk.get("text", "")
+                    if text:
+                        print(f"   Mira: {text}")
+                        speak(text)
+                except:
+                    pass
+        
+        print()
+        
     except Exception as e:
-        print(f"[Error] {e}")
+        print(f"   ✗ Error: {e}\n")
+        speak("Sorry, I couldn't reach the voice server.")
+
 
 def main():
     """Main voice assistant loop"""
-    print("\n" + "="*60)
-    print("Voice Assistant Started")
-    print("Wake words:", ", ".join(config['wake_words']))
-    print("Webhook:", f"http://{config['webhook_host']}:{config['webhook_port']}/response")
-    print("="*60 + "\n")
+    print("🎤 Voice assistant (HTTP MODE)")
+    print(f"   Voice server: {VOICE_SERVER}")
+    print(f"   Device: {sd.default.device[0]} @ {INPUT_RATE}Hz")
+    print("   Say: Alexa / Hey Jarvis / Hey Mycroft / Hey Rhasspy\n")
     
-    # Start webhook server in background
-    webhook_thread = threading.Thread(target=start_webhook_server, daemon=True)
-    webhook_thread.start()
-    
-    # Wait for server to start
-    time.sleep(2)
-    
-    # Open audio stream for wake word detection
-    stream = audio.open(
-        format=pyaudio.paInt16,
-        channels=CHANNELS,
-        rate=SAMPLE_RATE,
-        input=True,
-        frames_per_buffer=CHUNK_SIZE
-    )
-    
-    print("[Listening] Waiting for wake word...")
-    
-    try:
+    with sd.InputStream(
+        samplerate=INPUT_RATE,
+        channels=1,
+        dtype="float32",
+        blocksize=BLOCK_SIZE,
+        callback=audio_callback,
+    ):
         while True:
-            # Read audio chunk
-            chunk = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            audio_array = np.frombuffer(chunk, dtype=np.int16)
+            chunk = audio_q.get()
+            pcm = pcm16(chunk)
+            predictions = wake_model.predict(pcm)
             
-            # Feed to wake word detector
-            prediction = wake_word_model.predict(audio_array)
+            if not any(score > WAKE_THRESHOLD for score in predictions.values()):
+                continue
             
-            # Check if any wake word detected
-            for wake_word in config['wake_words']:
-                if prediction.get(wake_word, 0) > 0.5:
-                    print(f"\n[Wake Word] Detected: {wake_word}")
-                    
-                    # Record user speech
-                    audio_data = record_audio()
-                    
-                    # Transcribe
-                    print("[Transcribing]...")
-                    text = transcribe_audio(audio_data)
-                    
-                    if text:
-                        print(f"[You said] {text}")
-                        
-                        # Send to Mira
-                        send_to_mira(text)
-                        
-                        # Mira will stream responses back to /response endpoint
-                        # which will automatically speak them
-                    else:
-                        print("[Error] No speech detected")
-                    
-                    print("\n[Listening] Waiting for wake word...")
-                    break
-                    
-    except KeyboardInterrupt:
-        print("\n[Stopped] Voice assistant shutting down...")
-    finally:
-        stream.stop_stream()
-        stream.close()
-        audio.terminate()
+            # Clear queue
+            while not audio_q.empty():
+                audio_q.get()
+            
+            print(f"\n🎤 Wake word detected! Listening...")
+            
+            audio = record_until_silence()
+            
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                wav_path = tmp.name
+            
+            save_wav(wav_path, audio, TARGET_RATE)
+            
+            print("   Transcribing...")
+            text = transcribe(wav_path)
+            os.unlink(wav_path)
+            
+            if not text:
+                print("   (no speech)\n")
+                continue
+            
+            print(f"   You: {text}")
+            
+            ask_mira(text)
+
 
 if __name__ == "__main__":
     main()
