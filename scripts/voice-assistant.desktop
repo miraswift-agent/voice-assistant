@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Voice Assistant
+Comment=AI Voice Control with Visual Feedback
+Exec=/home/pi/voice-assistant/venv/bin/python /home/pi/voice-assistant/src/voice_assistant_gui.py
+Icon=/home/pi/voice-assistant/assets/icon.png
+Terminal=false
+Type=Application
+Categories=Utility;AudioVideo;
+StartupNotify=true
