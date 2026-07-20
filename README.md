@@ -69,7 +69,7 @@ Edit `config/settings.json`:
   "piper_model": "models/en_US-lessac-medium.onnx",
   "webhook_port": 8765,
   "telegram_token": "<your-bot-token>",
-  "openclaw_chat_id": "<mira-chat-id>"
+  "mira_chat_id": "<mira-chat-id>"
 }
 ```
 

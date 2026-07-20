@@ -63,7 +63,7 @@ nano config/settings.json
 
 **Required settings:**
 - `telegram_token`: Your Telegram bot token (get from @BotFather)
-- `openclaw_chat_id`: Mira's Telegram chat ID
+- `mira_chat_id`: Mira's Telegram chat ID
 
 **Optional settings:**
 - `wake_words`: Which wake words to enable
